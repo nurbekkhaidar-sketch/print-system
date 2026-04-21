@@ -19,9 +19,9 @@ services:
     restart: unless-stopped
     working_dir: /app
     volumes:
-      - ./api:/app
-      - ./portal:/app/portal
-      - ./api/storage/tmp:/app/storage/tmp
+     - ./print-cloud/api:/app
+     - ./print-cloud/portal:/app/portal
+     - ./print-cloud/api/storage/tmp:/app/storage/tmp
     command: sh -c "npm install && node index.js"
     env_file:
       - .env
