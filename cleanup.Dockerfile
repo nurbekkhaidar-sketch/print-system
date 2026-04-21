@@ -5,7 +5,11 @@ RUN apk add --no-cache bash ca-certificates tzdata
 
 # ставим зависимости в /app (а не в /app/api)
 COPY print-cloud/api/package*.json ./
-RUN npm install --omit=dev
+RUN node -v && npm -v
+RUN ls -la
+RUN test -f package.json && echo "package.json present"
+RUN test -f package-lock.json && echo "package-lock.json present" || (echo "package-lock.json missing" && exit 1)
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # скрипт cleanup
 COPY print-cloud/api/scripts ./scripts
