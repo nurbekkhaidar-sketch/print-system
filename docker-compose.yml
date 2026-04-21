@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./api:/app
+      - ./portal:/app/portal
+      - ./api/storage/tmp:/app/storage/tmp
+    command: sh -c "npm install && node index.js"
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  cleanup:
+    build:
+      context: .
+      dockerfile: cleanup.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STORAGE_TMP_DIR: /opt/print-cloud/api/storage/tmp
+    volumes:
+      - ./api/storage/tmp:/opt/print-cloud/api/storage/tmp
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
