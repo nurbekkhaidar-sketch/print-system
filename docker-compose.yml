@@ -19,9 +19,9 @@ services:
     restart: unless-stopped
     working_dir: /app
     volumes:
-     - ./print-cloud/api:/app
-     - ./print-cloud/portal:/app/portal
-     - ./print-cloud/api/storage/tmp:/app/storage/tmp
+      - ./api:/app
+      - ./portal:/app/portal
+      - ./api/storage/tmp:/app/storage/tmp
     command: sh -c "npm install && node index.js"
     env_file:
       - .env
@@ -31,7 +31,7 @@ services:
       db:
         condition: service_healthy
 
-    cleanup:
+  cleanup:
     build:
       context: .
       dockerfile: cleanup.Dockerfile
@@ -41,7 +41,7 @@ services:
     environment:
       STORAGE_TMP_DIR: /opt/print-cloud/api/storage/tmp
     volumes:
-      - ./print-cloud/api/storage/tmp:/opt/print-cloud/api/storage/tmp
+      - ./api/storage/tmp:/opt/print-cloud/api/storage/tmp
     depends_on:
       db:
         condition: service_healthy
