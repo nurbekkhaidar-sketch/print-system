@@ -3,14 +3,10 @@ name: Print Cloud — Phase 3 smoke
 on:
   push:
     paths:
-      - "print-cloud/**"
-      - "scripts/phase3-smoke*.ps1"
-      - ".github/workflows/print-cloud-phase3-smoke.yml"
+      - "**"
   pull_request:
     paths:
-      - "print-cloud/**"
-      - "scripts/phase3-smoke*.ps1"
-      - ".github/workflows/print-cloud-phase3-smoke.yml"
+      - "**"
   workflow_dispatch:
 
 jobs:
@@ -19,8 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write print-cloud .env for CI
-        working-directory: print-cloud
+      - name: Write .env for CI
         run: |
           cat > .env << 'EOF'
           POSTGRES_DB=print
@@ -33,7 +28,6 @@ jobs:
           EOF
 
       - name: Start Docker Compose
-        working-directory: print-cloud
         run: docker compose up -d
 
       - name: Wait for API
@@ -47,6 +41,8 @@ jobs:
             sleep 2
           done
           echo "API did not become ready in time"
+          docker compose ps || true
+          docker compose logs api || true
           exit 1
 
       - name: Phase 3 happy-path smoke
@@ -69,5 +65,4 @@ jobs:
 
       - name: Stop stack
         if: always()
-        working-directory: print-cloud
         run: docker compose down -v
