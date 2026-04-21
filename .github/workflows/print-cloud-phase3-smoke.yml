@@ -16,10 +16,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Write print-cloud .env for CI
+      - name: Debug repo structure
         run: |
-          mkdir -p print-cloud
-          cat > print-cloud/.env << 'EOF'
+          pwd
+          ls -la
+          echo "==== print-cloud ===="
+          ls -la print-cloud || true
+          echo "==== print-cloud/api ===="
+          ls -la print-cloud/api || true
+          echo "==== print-cloud/api/scripts ===="
+          ls -la print-cloud/api/scripts || true
+
+      - name: Write .env for CI
+        run: |
+          cat > .env << 'EOF'
           POSTGRES_DB=print
           POSTGRES_USER=print
           POSTGRES_PASSWORD=print_ci_secret
@@ -29,9 +39,9 @@ jobs:
           API_PORT=3000
           EOF
 
-      - name: Start Docker Compose (print-cloud)
+      - name: Start Docker Compose
         run: |
-          cd print-cloud
+          docker compose build --no-cache
           docker compose up -d
 
       - name: Wait for API
@@ -45,9 +55,10 @@ jobs:
             sleep 2
           done
           echo "API did not become ready in time"
-          cd print-cloud
           docker compose ps || true
           docker compose logs api || true
+          docker compose logs cleanup || true
+          docker compose logs db || true
           exit 1
 
       - name: Phase 3 happy-path smoke
@@ -71,5 +82,4 @@ jobs:
       - name: Stop stack
         if: always()
         run: |
-          cd print-cloud
           docker compose down -v || true
