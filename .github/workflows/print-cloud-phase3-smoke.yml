@@ -13,10 +13,12 @@ jobs:
   phase3-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Write print-cloud .env for CI
+      - name: Write print-cloud .env for CI
         run: |
+          mkdir -p print-cloud
           cat > print-cloud/.env << 'EOF'
           POSTGRES_DB=print
           POSTGRES_USER=print
@@ -26,32 +28,11 @@ jobs:
           AGENTS=ci_kiosk:ci_agent_smoke_token
           API_PORT=3000
           EOF
+
       - name: Start Docker Compose (print-cloud)
         run: |
           cd print-cloud
           docker compose up -d
-      - name: Wait for API
-        run: |
-          set -e
-          for i in $(seq 1 50); do
-            if curl -fsS "http://127.0.0.1:3000/api/agent/ping" >/dev/null 2>&1; then
-              echo "API up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "API did not become ready in time"
-          cd print-cloud
-          docker compose ps || true
-          docker compose logs api || true
-          exit 1
-      - name: Stop stack
-        if: always()
-        run: |
-          cd print-cloud
-          docker compose down -v || true
-            exit 1
-          fi
 
       - name: Wait for API
         run: |
@@ -64,10 +45,9 @@ jobs:
             sleep 2
           done
           echo "API did not become ready in time"
+          cd print-cloud
           docker compose ps || true
           docker compose logs api || true
-          (cd print-cloud && docker compose ps) || true
-          (cd print-cloud && docker compose logs api) || true
           exit 1
 
       - name: Phase 3 happy-path smoke
@@ -91,5 +71,5 @@ jobs:
       - name: Stop stack
         if: always()
         run: |
+          cd print-cloud
           docker compose down -v || true
-          (cd print-cloud && docker compose down -v) || true
