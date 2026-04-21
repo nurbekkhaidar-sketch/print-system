@@ -31,7 +31,7 @@ services:
       db:
         condition: service_healthy
 
-  cleanup:
+    cleanup:
     build:
       context: .
       dockerfile: cleanup.Dockerfile
