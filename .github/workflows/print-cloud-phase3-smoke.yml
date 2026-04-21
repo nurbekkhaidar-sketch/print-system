@@ -15,9 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write .env for CI (root)
+            - name: Write print-cloud .env for CI
         run: |
-          cat > .env << 'EOF'
+          cat > print-cloud/.env << 'EOF'
           POSTGRES_DB=print
           POSTGRES_USER=print
           POSTGRES_PASSWORD=print_ci_secret
@@ -26,27 +26,30 @@ jobs:
           AGENTS=ci_kiosk:ci_agent_smoke_token
           API_PORT=3000
           EOF
-
-      - name: Write .env for CI (print-cloud, if present)
+      - name: Start Docker Compose (print-cloud)
         run: |
-          if [ -d "print-cloud" ]; then
-            cp .env print-cloud/.env
-          fi
-
-      - name: Start Docker Compose (root or print-cloud)
+          cd print-cloud
+          docker compose up -d
+      - name: Wait for API
         run: |
           set -e
-          if [ -f "docker-compose.yml" ] || [ -f "compose.yml" ]; then
-            echo "Using compose in repo root"
-            docker compose up -d
-          elif [ -f "print-cloud/docker-compose.yml" ] || [ -f "print-cloud/compose.yml" ]; then
-            echo "Using compose in print-cloud/"
-            (cd print-cloud && docker compose up -d)
-          else
-            echo "No docker-compose.yml found in root or print-cloud/"
-            ls -la
-            echo "--- print-cloud ---"
-            ls -la print-cloud || true
+          for i in $(seq 1 50); do
+            if curl -fsS "http://127.0.0.1:3000/api/agent/ping" >/dev/null 2>&1; then
+              echo "API up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become ready in time"
+          cd print-cloud
+          docker compose ps || true
+          docker compose logs api || true
+          exit 1
+      - name: Stop stack
+        if: always()
+        run: |
+          cd print-cloud
+          docker compose down -v || true
             exit 1
           fi
 
