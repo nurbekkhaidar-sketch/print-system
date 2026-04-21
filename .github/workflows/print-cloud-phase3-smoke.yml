@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write .env for CI
+      - name: Write .env for CI (root)
         run: |
           cat > .env << 'EOF'
           POSTGRES_DB=print
@@ -27,13 +27,33 @@ jobs:
           API_PORT=3000
           EOF
 
-      - name: Start Docker Compose
-        run: docker compose up -d
+      - name: Write .env for CI (print-cloud, if present)
+        run: |
+          if [ -d "print-cloud" ]; then
+            cp .env print-cloud/.env
+          fi
+
+      - name: Start Docker Compose (root or print-cloud)
+        run: |
+          set -e
+          if [ -f "docker-compose.yml" ] || [ -f "compose.yml" ]; then
+            echo "Using compose in repo root"
+            docker compose up -d
+          elif [ -f "print-cloud/docker-compose.yml" ] || [ -f "print-cloud/compose.yml" ]; then
+            echo "Using compose in print-cloud/"
+            (cd print-cloud && docker compose up -d)
+          else
+            echo "No docker-compose.yml found in root or print-cloud/"
+            ls -la
+            echo "--- print-cloud ---"
+            ls -la print-cloud || true
+            exit 1
+          fi
 
       - name: Wait for API
         run: |
           set -e
-          for i in $(seq 1 40); do
+          for i in $(seq 1 50); do
             if curl -fsS "http://127.0.0.1:3000/api/agent/ping" >/dev/null 2>&1; then
               echo "API up"
               exit 0
@@ -43,6 +63,8 @@ jobs:
           echo "API did not become ready in time"
           docker compose ps || true
           docker compose logs api || true
+          (cd print-cloud && docker compose ps) || true
+          (cd print-cloud && docker compose logs api) || true
           exit 1
 
       - name: Phase 3 happy-path smoke
@@ -65,4 +87,6 @@ jobs:
 
       - name: Stop stack
         if: always()
-        run: docker compose down -v
+        run: |
+          docker compose down -v || true
+          (cd print-cloud && docker compose down -v) || true
