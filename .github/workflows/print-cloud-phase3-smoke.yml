@@ -33,6 +33,13 @@ jobs:
           POSTGRES_DB=print
           POSTGRES_USER=print
           POSTGRES_PASSWORD=print_ci_secret
+
+          PGHOST=db
+          PGPORT=5432
+          PGDATABASE=print
+          PGUSER=print
+          PGPASSWORD=print_ci_secret
+
           ADMIN_TOKEN=ci_admin_smoke_token
           PORTAL_TOKEN=ci_portal_smoke_token
           AGENTS=ci_kiosk:ci_agent_smoke_token
