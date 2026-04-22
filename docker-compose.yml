@@ -9,7 +9,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -23,6 +23,12 @@ services:
     command: sh -c "npm install && node print-cloud/api/index.js"
     env_file:
       - .env
+    environment:
+      PGHOST: ${PGHOST}
+      PGPORT: ${PGPORT}
+      PGDATABASE: ${PGDATABASE}
+      PGUSER: ${PGUSER}
+      PGPASSWORD: ${PGPASSWORD}
     ports:
       - "3000:3000"
     depends_on:
@@ -38,7 +44,11 @@ services:
       - .env
     environment:
       STORAGE_TMP_DIR: /opt/print-cloud/api/storage/tmp
-      PGHOST: db
+      PGHOST: ${PGHOST}
+      PGPORT: ${PGPORT}
+      PGDATABASE: ${PGDATABASE}
+      PGUSER: ${PGUSER}
+      PGPASSWORD: ${PGPASSWORD}
     volumes:
       - ./print-cloud/api/storage/tmp:/opt/print-cloud/api/storage/tmp
     depends_on:
