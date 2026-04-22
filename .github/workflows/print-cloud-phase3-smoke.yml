@@ -95,7 +95,7 @@ jobs:
           PHASE3_ADMIN_TOKEN: ci_admin_smoke_token
           PHASE3_PRINTER_ID: KIOSK_1
           PHASE3_AGENT_TOKEN: ci_agent_smoke_token
-        run: pwsh -File scripts/phase3-smoke-test.ps1
+        run: pwsh -File ../scripts/phase3-smoke-test.ps1
 
       - name: Phase 3 negative smoke
         working-directory: print-cloud
@@ -105,7 +105,7 @@ jobs:
           PHASE3_ADMIN_TOKEN: ci_admin_smoke_token
           PHASE3_PRINTER_ID: KIOSK_1
           PHASE3_AGENT_TOKEN: ci_agent_smoke_token
-        run: pwsh -File scripts/phase3-smoke-negative.ps1
+        run: pwsh -File ../scripts/phase3-smoke-negative.ps1
 
       - name: Stop stack
         if: always()
