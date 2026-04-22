@@ -63,8 +63,11 @@ jobs:
           done
           echo "API did not become ready in time"
           docker compose ps || true
+          echo "==== API LOGS ===="
           docker compose logs api || true
+          echo "==== CLEANUP LOGS ===="
           docker compose logs cleanup || true
+          echo "==== DB LOGS ===="
           docker compose logs db || true
           exit 1
 
