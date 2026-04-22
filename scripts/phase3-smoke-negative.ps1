@@ -48,10 +48,10 @@ function Invoke-ExpectError {
   foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] }
   $h["Accept"] = "application/json"
   $req = @{
-    Uri                  = $Url
-    Method               = $Method
-    Headers              = $h
-    SkipHttpErrorCheck   = $true
+    Uri                = $Url
+    Method             = $Method
+    Headers            = $h
+    SkipHttpErrorCheck = $true
   }
   if ($null -ne $Body) {
     $req.ContentType = "application/json"
@@ -89,19 +89,46 @@ Invoke-ExpectError -Method POST -Url "$BaseUrl/api/portal/copy-sessions/$NegSess
   "Idempotency-Key" = ("neg-pi-" + [guid]::NewGuid().ToString())
 } -Body $null -ExpectedStatus @(409) -ExpectedErrorSubstring "SCAN_NOT_COMPLETED"
 
-# N1 leaves scan job in `queued`; jobs/next orders by created_at ASC, so fail this job or N2 will reserve the wrong id.
-$n1Reserve = Invoke-Json -Method GET -Url "$BaseUrl/api/agent/jobs/next?printerId=$PrinterId&leaseSeconds=120" -Headers @{
-  Authorization = "Bearer $AgentToken"
+# N1 leaves scan job in `queued`; jobs/next orders by created_at ASC.
+# Queue may already contain older queued scan jobs from prior scenarios in the same CI run,
+# so keep reserving/failing earlier jobs until we reach N1's scan job id.
+$maxCleanupReserves = 20
+$cleanupReservedIds = @()
+$n1Found = $false
+
+for ($i = 1; $i -le $maxCleanupReserves; $i++) {
+  $n1Reserve = Invoke-Json -Method GET -Url "$BaseUrl/api/agent/jobs/next?printerId=$PrinterId&leaseSeconds=120" -Headers @{
+    Authorization = "Bearer $AgentToken"
+  }
+
+  Assert ($n1Reserve.ok -eq $true) "N1 cleanup: reserve failed"
+
+  $reservedJobId = [int]$n1Reserve.job.id
+  $cleanupReservedIds += $reservedJobId
+
+  if ($reservedJobId -eq $N1ScanJobId) {
+    $n1Found = $true
+    break
+  }
+
+  $cleanupFailOther = Invoke-Json -Method POST -Url "$BaseUrl/api/agent/jobs/$reservedJobId/fail?printerId=$PrinterId" -Headers @{
+    Authorization = "Bearer $AgentToken"
+  } -Body @{
+    error = @{ code = "SMOKE_CLEANUP"; message = "phase3-smoke-negative cleanup before N1 target" }
+  }
+
+  Assert ($cleanupFailOther.ok -eq $true) "N1 cleanup: fail preceding job $reservedJobId failed"
 }
-Assert ($n1Reserve.ok -eq $true) "N1 cleanup: reserve failed"
-Assert ([int]$n1Reserve.job.id -eq $N1ScanJobId) "N1 cleanup: expected scan job $N1ScanJobId, got $($n1Reserve.job.id) (queue polluted?)"
+
+Assert $n1Found "N1 cleanup: target scan job $N1ScanJobId was not found after reserved ids [$($cleanupReservedIds -join ', ')]"
+
 $cleanupFail = Invoke-Json -Method POST -Url "$BaseUrl/api/agent/jobs/$N1ScanJobId/fail?printerId=$PrinterId" -Headers @{
   Authorization = "Bearer $AgentToken"
 } -Body @{
   error = @{ code = "SMOKE_CLEANUP"; message = "phase3-smoke-negative N1 orphan" }
 }
 Assert ($cleanupFail.ok -eq $true) "N1 cleanup: fail failed"
-Write-Host "N1 orphan scan job $N1ScanJobId failed (queue clean for N2)"
+Write-Host "N1 orphan scan job $N1ScanJobId failed after reserving ids [$($cleanupReservedIds -join ', ')] (queue clean for N2)"
 
 # N2) trusted confirm with unknown paymentIntentId → PAYMENT_INTENT_NOT_FOUND
 $idKey2 = "smoke-neg2-" + [guid]::NewGuid().ToString()
