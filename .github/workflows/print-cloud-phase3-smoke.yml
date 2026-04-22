@@ -12,13 +12,14 @@ on:
 jobs:
   phase3-smoke:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Write .env for CI
         run: |
-          cat > .env << 'EOF'
+          cat > print-cloud/.env << 'EOF'
           POSTGRES_DB=print
           POSTGRES_USER=print
           POSTGRES_PASSWORD=print_ci_secret
@@ -31,56 +32,17 @@ jobs:
 
           ADMIN_TOKEN=ci_admin_smoke_token
           PORTAL_TOKEN=ci_portal_smoke_token
-          AGENTS=ci_kiosk:ci_agent_smoke_token
+          AGENTS=KIOSK_1:ci_agent_smoke_token
           API_PORT=3000
           EOF
 
-      - name: Start DB only
+      - name: Start stack
+        working-directory: print-cloud
         run: |
-          docker compose up -d db
-
-      - name: Wait for DB
-        run: |
-          set -e
-          for i in $(seq 1 60); do
-            if docker compose exec -T db pg_isready -U print -d print >/dev/null 2>&1; then
-              echo "DB up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "DB did not become ready in time"
-          docker compose ps || true
-          docker compose logs db || true
-          exit 1
-
-      - name: Install root dependencies for migration step
-        run: |
-          npm ci --no-audit --no-fund
-
-      - name: Detect migration script
-        id: detect_migration
-        shell: bash
-        run: |
-          set -e
-          SCRIPT_NAME=$(node -e "const s=require('./package.json').scripts||{}; const names=['migrate','db:migrate','db:init','db:setup','init-db','init:db','setup-db','schema']; const hit=names.find(n=>s[n]); if(!hit){process.exit(2)}; process.stdout.write(hit)")
-          echo "script_name=$SCRIPT_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Run migrations / init DB
-        env:
-          PGHOST: 127.0.0.1
-          PGPORT: 5432
-          PGDATABASE: print
-          PGUSER: print
-          PGPASSWORD: print_ci_secret
-        run: |
-          npm run "${{ steps.detect_migration.outputs.script_name }}"
-
-      - name: Start API and cleanup
-        run: |
-          docker compose up -d api cleanup
+          docker compose up -d --build
 
       - name: Wait for API
+        working-directory: print-cloud
         run: |
           set -e
           for i in $(seq 1 60); do
@@ -105,7 +67,7 @@ jobs:
           PHASE3_BASE_URL: http://127.0.0.1:3000
           PHASE3_PORTAL_TOKEN: ci_portal_smoke_token
           PHASE3_ADMIN_TOKEN: ci_admin_smoke_token
-          PHASE3_PRINTER_ID: ci_kiosk
+          PHASE3_PRINTER_ID: KIOSK_1
           PHASE3_AGENT_TOKEN: ci_agent_smoke_token
         run: pwsh -File scripts/phase3-smoke-test.ps1
 
@@ -114,11 +76,12 @@ jobs:
           PHASE3_BASE_URL: http://127.0.0.1:3000
           PHASE3_PORTAL_TOKEN: ci_portal_smoke_token
           PHASE3_ADMIN_TOKEN: ci_admin_smoke_token
-          PHASE3_PRINTER_ID: ci_kiosk
+          PHASE3_PRINTER_ID: KIOSK_1
           PHASE3_AGENT_TOKEN: ci_agent_smoke_token
         run: pwsh -File scripts/phase3-smoke-negative.ps1
 
       - name: Stop stack
         if: always()
+        working-directory: print-cloud
         run: |
           docker compose down -v || true
