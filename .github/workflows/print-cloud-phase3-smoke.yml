@@ -36,10 +36,10 @@ jobs:
           API_PORT=3000
           EOF
 
-      - name: Start stack
+      - name: Start DB and API only
         working-directory: print-cloud
         run: |
-          docker compose up -d --build
+          docker compose up -d --build db api
 
       - name: Wait for API
         working-directory: print-cloud
@@ -56,8 +56,6 @@ jobs:
           docker compose ps || true
           echo "==== API LOGS ===="
           docker compose logs api || true
-          echo "==== CLEANUP LOGS ===="
-          docker compose logs cleanup || true
           echo "==== DB LOGS ===="
           docker compose logs db || true
           exit 1
