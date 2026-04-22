@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Print — Upload</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; margin-top: 1rem; }
+    input[type="password"], input[type="file"] { margin-top: 0.25rem; }
+    button { margin-top: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+    #status { margin-top: 1rem; padding: 0.75rem; border-radius: 4px; background: #f0f0f0; }
+    #status.error { background: #fdd; }
+    #status.success { background: #dfd; }
+    .job-id { font-weight: bold; }
+    .scan-screen { margin-top: 0.25rem; }
+    .scan-screen .scan-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 0.5rem 0; }
+    .scan-screen .scan-steps { margin: 0.5rem 0; padding-left: 1.25rem; }
+    .scan-screen .scan-wait { margin: 0.75rem 0 0 0; }
+    .scan-screen .scan-meta { margin: 0.35rem 0; font-size: 0.95rem; }
+    .scan-screen .scan-current-job { margin: 0.75rem 0 0.35rem 0; font-size: 1rem; }
+    .scan-screen .scan-hint { margin: 0.35rem 0; font-size: 0.82rem; color: #555; line-height: 1.35; }
+  </style>
+</head>
+<body>
+  <h1>Print at kiosk</h1>
+  <p>Upload a file to create a print job. The kiosk will pick it up and print.</p>
+
+  <label>Token (pilot: use admin token):</label>
+  <input type="password" id="token" placeholder="Bearer token" autocomplete="off" />
+
+  <label>File (PDF preferred):</label>
+  <input type="file" id="file" accept=".pdf,application/pdf" />
+
+  <button type="button" id="upload">Upload and enqueue</button>
+  <button type="button" id="scanBtn">Start Scan</button>
+  <button type="button" id="copyBtn">Copy</button>
+
+  <div id="status"></div>
+
+  <script>
+    const API = ''; // same origin
+    const tokenEl = document.getElementById('token');
+    const fileEl = document.getElementById('file');
+    const uploadBtn = document.getElementById('upload');
+    const scanBtn = document.getElementById('scanBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const statusEl = document.getElementById('status');
+
+    const RATE_KZT = 20;
+
+    /** Cleared on terminal status or page unload */
+    let activeScanPollTimer = null;
+    let scanDotsAnimTimer = null;
+    let scanCountdownTimer = null;
+    let scanPollFailCount = 0;
+    const MAX_POLL_FAILS = 5;
+    const SCAN_COUNTDOWN_START_SEC = 60;
+    /** True after createScanFtpPresetJob(); cleared in clearActiveScanPoll. Poll uses only job.status from GET. */
+    let activePortalScanFlow = false;
+    /** Authoritative id for the current Start Scan attempt; cleared in clearActiveScanPoll. */
+    let activeScanJobId = null;
+
+    function clearScanUiAnimTimers() {
+      if (scanDotsAnimTimer) {
+        clearInterval(scanDotsAnimTimer);
+        scanDotsAnimTimer = null;
+      }
+      if (scanCountdownTimer) {
+        clearInterval(scanCountdownTimer);
+        scanCountdownTimer = null;
+      }
+    }
+
+    function clearActiveScanPoll() {
+      activePortalScanFlow = false;
+      activeScanJobId = null;
+      clearScanUiAnimTimers();
+      if (activeScanPollTimer) {
+        clearInterval(activeScanPollTimer);
+        activeScanPollTimer = null;
+      }
+    }
+    window.addEventListener('beforeunload', clearActiveScanPoll);
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderScanInstructionShell(jobId, cloudStatus) {
+      setStatusHtml(
+        '<div class="scan-screen">' +
+        '<p class="scan-title">Отсканируйте документ на принтере</p>' +
+        '<ol class="scan-steps">' +
+        '<li>Положите документ в автоподатчик (ADF)</li>' +
+        '<li>Нажмите кнопку &quot;Scan&quot; на принтере</li>' +
+        '<li>Выберите профиль: FTP_SCAN-B_W</li>' +
+        '<li>Нажмите Start</li>' +
+        '</ol>' +
+        '<p class="scan-wait">Ожидаем файл<span id="scan-wait-dots"></span></p>' +
+        '<p class="scan-meta">Таймер: <span id="scan-countdown">' + SCAN_COUNTDOWN_START_SEC + '</span> сек</p>' +
+        '<p class="scan-meta">Статус: <strong id="scan-cloud-status">' + escapeHtml(cloudStatus) + '</strong></p>' +
+        '<p class="scan-current-job">Текущее задание: Job <span class="job-id">' + escapeHtml(String(jobId)) + '</span></p>' +
+        '<p class="scan-hint">Если в очереди есть более ранние задания на сканирование, это задание может начать выполняться не сразу.</p>' +
+        '<p class="scan-hint">Проверяйте именно этот номер Job при сверке с логами и API.</p>' +
+        '</div>',
+        false
+      );
+    }
+
+    function startScanUiAnimators() {
+      let dotPhase = 0;
+      const dotCycle = ['.', '..', '...', ''];
+      scanDotsAnimTimer = setInterval(function () {
+        const el = document.getElementById('scan-wait-dots');
+        if (el) el.textContent = dotCycle[dotPhase % dotCycle.length];
+        dotPhase++;
+      }, 500);
+
+      let secLeft = SCAN_COUNTDOWN_START_SEC;
+      scanCountdownTimer = setInterval(function () {
+        secLeft = Math.max(0, secLeft - 1);
+        const el = document.getElementById('scan-countdown');
+        if (el) el.textContent = String(secLeft);
+      }, 1000);
+    }
+
+    function updateScanCloudStatusEl(cloudStatus) {
+      const el = document.getElementById('scan-cloud-status');
+      if (el) el.textContent = cloudStatus;
+    }
+
+    function setStatus(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.className = isError ? 'error' : 'success';
+    }
+
+    function setStatusHtml(html, isError) {
+      statusEl.innerHTML = html;
+      statusEl.className = isError ? 'error' : 'success';
+    }
+
+    function showError(msg) {
+      setStatusHtml('<span style="color:red">' + msg + '</span>', true);
+    }
+
+    function showSuccess(msg) {
+      setStatusHtml('<span style="color:green">' + msg + '</span>', false);
+    }
+
+    function normalizeError(e, responseJson) {
+      return {
+        message: e?.message || 'unknown_error',
+        code: responseJson?.error || e?.code || null,
+        httpStatus: e?.httpStatus || null
+      };
+    }
+
+    /**
+     * Portal GET may be { ok, job: { id, status, ... } } or (defensive) a bare job object.
+     * Returns one normalized job object or null.
+     */
+    function normalizePortalPollJob(data) {
+      if (data == null || typeof data !== 'object') return null;
+      if (data.job != null && typeof data.job === 'object') return data.job;
+      if (typeof data.status === 'string') return data;
+      return null;
+    }
+
+    /** Lowercase trimmed status for terminal checks (handles odd JSON/pg types). */
+    function normalizePortalJobStatus(job) {
+      const raw = job && job.status;
+      if (raw == null) return '';
+      return String(raw).trim().toLowerCase();
+    }
+
+    /** UI-only status mapping for scan/copy scan phase. Portal treats job.status as read-only. */
+    function getScanUserMessage(status) {
+      const s = status == null ? '' : String(status).trim().toLowerCase();
+      if (s === 'queued') return 'Ожидает выполнения...';
+      if (s === 'reserved') return 'Выполняется на устройстве. Подойдите к принтеру и нажмите Start.';
+      if (s === 'completed') return 'Готово.';
+      if (s === 'failed') return 'Операция не была завершена (возможно, сканирование не было выполнено). Попробуйте ещё раз.';
+      return 'Статус неизвестен.';
+    }
+
+    function getGenericUserMessage(status) {
+      const s = status == null ? '' : String(status).trim().toLowerCase();
+      if (s === 'queued') return 'Ожидает выполнения...';
+      if (s === 'reserved') return 'Выполняется...';
+      if (s === 'completed') return 'Готово.';
+      if (s === 'failed') return 'Операция не была завершена. Попробуйте ещё раз.';
+      return 'Статус неизвестен.';
+    }
+
+    async function pollJob(id) {
+      const token = tokenEl.value.trim();
+      if (!token) { setStatus('Token required to poll status.', true); return null; }
+      const pathId = encodeURIComponent(String(id));
+      const res = await fetch(API + '/api/portal/jobs/' + pathId, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      return normalizePortalPollJob(data);
+    }
+
+    async function fetchAdminJob(id) {
+      const token = tokenEl.value.trim();
+      if (!token) return null;
+      const res = await fetch(API + '/api/admin/jobs/' + id, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      return data.job || null;
+    }
+
+    function downloadButtonHtml(fileUrl) {
+      const safeUrl = String(fileUrl || '');
+      return '<div style="margin-top:0.75rem;"><a href="' + safeUrl + '" download><button type="button">Скачать файл</button></a></div>';
+    }
+
+    async function createScanFtpPresetJob() {
+      const token = tokenEl.value.trim();
+      const res = await fetch(API + '/api/portal/jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + token
+        },
+        body: JSON.stringify({ kind: 'scan_adf', scenario: 'SCAN_BW_A4_ADF_FTP' })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || String(res.status));
+        err.httpStatus = res.status;
+        err.code = data?.error || null;
+        err.response = data;
+        throw err;
+      }
+      return data.job;
+    }
+
+    /** Copy flow: same JSON intake as Start Scan */
+    function createScanAdfJob() {
+      return createScanFtpPresetJob();
+    }
+
+    async function createJsonPrintJob(payload) {
+      const token = tokenEl.value.trim();
+      const res = await fetch(API + '/api/portal/jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + token
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || String(res.status));
+        err.httpStatus = res.status;
+        err.code = data?.error || null;
+        err.response = data;
+        throw err;
+      }
+      return data.job;
+    }
+
+    function startPolling(jobId, opts) {
+      const intervalMs = opts?.intervalMs ?? 2000;
+      const onStatus = typeof opts?.onStatus === 'function' ? opts.onStatus : null;
+      const hintAfterMs = opts?.hintAfterMs ?? 60000;
+      const hintText = opts?.hintText ?? '';
+
+      let hinted = false;
+      const startedAt = Date.now();
+
+      const interval = setInterval(async () => {
+        const job = await pollJob(jobId);
+        if (!job) return;
+
+        const s = job.status;
+        if (onStatus) onStatus(job);
+
+        if (!hinted && hintText && (Date.now() - startedAt) >= hintAfterMs) {
+          hinted = true;
+          setStatusHtml(statusEl.innerHTML + '<div style="margin-top:0.5rem; opacity:0.9;">' + hintText + '</div>', false);
+        }
+
+        if (s === 'completed' || s === 'failed') clearInterval(interval);
+      }, intervalMs);
+
+      return () => clearInterval(interval);
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+      const token = tokenEl.value.trim();
+      const file = fileEl.files[0];
+      if (!token) { setStatus('Enter token.', true); return; }
+      if (!file) { setStatus('Select a file.', true); return; }
+
+      setStatus('Uploading…');
+      const form = new FormData();
+      form.append('file', file);
+
+      try {
+        const res = await fetch(API + '/api/portal/jobs', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token },
+          body: form
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setStatus('Error: ' + (data.error || res.status), true);
+          return;
+        }
+        const jobId = data.job?.id;
+        const initialStatus = data.job?.status || 'queued';
+        setStatus('Job created: ' + jobId + '. ' + getGenericUserMessage(initialStatus) + ' Polling…');
+        statusEl.classList.remove('error');
+
+        startPolling(jobId, {
+          intervalMs: 2000,
+          onStatus: (job) => {
+            setStatusHtml('Job <span class="job-id">' + jobId + '</span>: ' + escapeHtml(getGenericUserMessage(job.status)), false);
+          }
+        });
+      } catch (e) {
+        showError('Системная ошибка запроса');
+      }
+    });
+
+    scanBtn.addEventListener('click', async () => {
+      const token = tokenEl.value.trim();
+      if (!token) { setStatus('Enter token.', true); return; }
+
+      clearActiveScanPoll();
+      scanBtn.disabled = true;
+      uploadBtn.disabled = true;
+      copyBtn.disabled = true;
+
+      try {
+        const job = await createScanFtpPresetJob();
+        activeScanJobId = job?.id ?? null;
+        console.debug('scan_create jobId', activeScanJobId);
+
+        const initialStatus = job?.status || 'queued';
+
+        if (activeScanJobId == null) {
+          showError('Не удалось получить номер задания после создания скана.');
+          scanBtn.disabled = false;
+          uploadBtn.disabled = false;
+          copyBtn.disabled = false;
+          return;
+        }
+
+        activePortalScanFlow = true;
+        renderScanInstructionShell(activeScanJobId, getScanUserMessage(initialStatus));
+        console.debug('scan_active_job_ui', activeScanJobId);
+        startScanUiAnimators();
+        scanPollFailCount = 0;
+
+        activeScanPollTimer = setInterval(async () => {
+          const pollId = activeScanJobId;
+          if (pollId == null) return;
+
+          console.debug('scan_poll jobId', pollId);
+
+          const normalizedJob = await pollJob(pollId);
+
+          if (!normalizedJob) {
+            scanPollFailCount++;
+
+            if (scanPollFailCount >= MAX_POLL_FAILS) {
+              const errId = activeScanJobId;
+              clearActiveScanPoll();
+
+              setStatusHtml(
+                'Job <span class="job-id">' + escapeHtml(String(errId != null ? errId : '?')) + '</span>: статус неизвестен (проблема соединения).<br/>' +
+                'Проверьте соединение и обновите страницу',
+                true
+              );
+
+              scanBtn.disabled = false;
+              uploadBtn.disabled = false;
+              copyBtn.disabled = false;
+
+              return;
+            }
+
+            return;
+          }
+
+          scanPollFailCount = 0;
+
+          console.debug('scan_poll status', normalizedJob?.status, normalizedJob);
+
+          const s = normalizePortalJobStatus(normalizedJob);
+          updateScanCloudStatusEl(
+            getScanUserMessage(normalizedJob.status)
+          );
+
+          if (s === 'completed' || s === 'failed') {
+            const doneId = activeScanJobId;
+            clearActiveScanPoll();
+            if (s === 'completed') {
+              showSuccess(
+                'Сканирование завершено. Job <span class="job-id">' + escapeHtml(String(doneId != null ? doneId : '?')) + '</span>.'
+              );
+            } else {
+              showError(
+                escapeHtml(getScanUserMessage('failed')) +
+                ' Job <span class="job-id">' + escapeHtml(String(doneId != null ? doneId : '?')) + '</span>.'
+              );
+            }
+            scanBtn.disabled = false;
+            uploadBtn.disabled = false;
+            copyBtn.disabled = false;
+          }
+        }, 2000);
+      } catch (e) {
+        scanPollFailCount = 0;
+        console.error('SCAN_ERROR_RAW', e);
+        console.error('SCAN_ERROR_RESPONSE', e?.response);
+        const err = normalizeError(e, e?.response);
+        if (err.httpStatus === 401) showError('Ошибка авторизации (портал)');
+        else showError('Системная ошибка запроса');
+        scanBtn.disabled = false;
+        uploadBtn.disabled = false;
+        copyBtn.disabled = false;
+      }
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      const token = tokenEl.value.trim();
+      if (!token) { setStatus('Enter token.', true); return; }
+
+      copyBtn.disabled = true;
+      scanBtn.disabled = true;
+      uploadBtn.disabled = true;
+
+      setStatusHtml(
+        'Положите документы в автоподатчик (ADF)<br/>и нажмите SCAN на принтере<br/><br/>Ожидание сканирования…',
+        false
+      );
+
+      try {
+        const scanJob = await createScanAdfJob();
+        const scanJobId = scanJob?.id;
+
+        startPolling(scanJobId, {
+          intervalMs: 2500,
+          hintAfterMs: 60000,
+          hintText: 'Если сканирование не началось, нажмите кнопку SCAN на принтере',
+          onStatus: async (job) => {
+            const s = job.status;
+            if (s !== 'completed' && s !== 'failed') {
+              setStatusHtml(
+                'Scan job <span class="job-id">' + scanJobId + '</span>: ' + escapeHtml(getScanUserMessage(s)) + '<br/>Ожидание сканирования…',
+                false
+              );
+              return;
+            }
+            if (s === 'failed') {
+              showError(escapeHtml(getScanUserMessage('failed')));
+              copyBtn.disabled = false;
+              scanBtn.disabled = false;
+              uploadBtn.disabled = false;
+              return;
+            }
+
+            const fullScanJob = await fetchAdminJob(scanJobId);
+            const fileUrl = fullScanJob?.result?.fileUrl;
+            const pages = fullScanJob?.result?.pages;
+
+            if (!Number.isFinite(Number(pages)) || Number(pages) <= 0) {
+              showError('Сканирование завершено, но страницы не определены');
+              copyBtn.disabled = false;
+              scanBtn.disabled = false;
+              uploadBtn.disabled = false;
+              return;
+            }
+            if (!fileUrl) {
+              showError('Файл для печати не найден');
+              copyBtn.disabled = false;
+              scanBtn.disabled = false;
+              uploadBtn.disabled = false;
+              return;
+            }
+
+            const pagesN = Number(pages);
+            const uiId = 'copy_' + String(scanJobId);
+            const copiesInputId = uiId + '_copies';
+            const priceId = uiId + '_price';
+            const confirmId = uiId + '_confirm';
+
+            const renderPrice = (copies) => {
+              const c = Math.max(1, Math.min(99, Number(copies) || 1));
+              const price = pagesN * c * RATE_KZT;
+              const el = document.getElementById(priceId);
+              if (el) el.textContent = String(price);
+            };
+
+            setStatusHtml(
+              'Страниц: <b>' + pagesN + '</b><br/>' +
+              '<label style="display:block; margin-top:0.75rem;">Копий:</label>' +
+              '<input id="' + copiesInputId + '" type="number" min="1" max="99" value="1" style="margin-top:0.25rem; width:7rem;" />' +
+              '<div style="margin-top:0.75rem;">Цена: <b><span id="' + priceId + '">' + (pagesN * RATE_KZT) + '</span> KZT</b></div>' +
+              '<div style="margin-top:0.75rem;"><button type="button" id="' + confirmId + '">Подтвердить и напечатать</button></div>',
+              false
+            );
+
+            const copiesEl = document.getElementById(copiesInputId);
+            if (copiesEl) {
+              copiesEl.addEventListener('input', () => renderPrice(copiesEl.value));
+              renderPrice(copiesEl.value);
+            }
+
+            const confirmBtn = document.getElementById(confirmId);
+            if (confirmBtn) {
+              confirmBtn.addEventListener('click', async () => {
+                const copies = Math.max(1, Math.min(99, Number(copiesEl?.value) || 1));
+                confirmBtn.disabled = true;
+                setStatusHtml('Печать выполняется…', false);
+
+                try {
+                  const printJob = await createJsonPrintJob({
+                    kind: 'print',
+                    fileUrl,
+                    copies
+                  });
+                  const printJobId = printJob?.id;
+
+                  startPolling(printJobId, {
+                    intervalMs: 2000,
+                    onStatus: (pj) => {
+                      setStatusHtml(
+                        'Print job <span class="job-id">' + printJobId + '</span>: ' + escapeHtml(getGenericUserMessage(pj.status)) + '<br/>Печать выполняется…',
+                        false
+                      );
+                      if (pj.status === 'completed') showSuccess('Операция завершена');
+                      if (pj.status === 'failed') showError(escapeHtml(getGenericUserMessage('failed')));
+                    }
+                  });
+                } catch (e) {
+                  const err = normalizeError(e, e?.response);
+                  if (err.code === 'missing_fileUrl') {
+                    showError('Файл для печати не найден');
+                  } else if (err.code === 'invalid_copies') {
+                    showError('Некорректное количество копий');
+                  } else if (err.httpStatus === 401) {
+                    showError('Ошибка авторизации (портал)');
+                  } else {
+                    showError('Системная ошибка при создании задания');
+                  }
+                  confirmBtn.disabled = false;
+                  copyBtn.disabled = false;
+                  scanBtn.disabled = false;
+                  uploadBtn.disabled = false;
+                }
+              });
+            }
+
+            // allow user to start another flow after pricing screen appears
+            copyBtn.disabled = false;
+            scanBtn.disabled = false;
+            uploadBtn.disabled = false;
+          }
+        });
+      } catch (e) {
+        const err = normalizeError(e, e?.response);
+        if (err.httpStatus === 401) showError('Ошибка авторизации (портал)');
+        else showError('Системная ошибка запроса');
+        copyBtn.disabled = false;
+        scanBtn.disabled = false;
+        uploadBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
