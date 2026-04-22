@@ -21,8 +21,10 @@ services:
     restart: unless-stopped
     working_dir: /app
     volumes:
-      - ./:/app
-    command: sh -c "npm install && node print-cloud/api/index.js"
+      - ./api:/app
+      - ./portal:/app/portal
+      - ./api/storage/tmp:/app/storage/tmp
+    command: sh -c "npm install && node index.js"
     env_file:
       - .env
     environment:
@@ -39,7 +41,7 @@ services:
 
   cleanup:
     build:
-      context: .
+      context: ..
       dockerfile: cleanup.Dockerfile
     restart: unless-stopped
     env_file:
@@ -52,7 +54,7 @@ services:
       PGUSER: ${PGUSER}
       PGPASSWORD: ${PGPASSWORD}
     volumes:
-      - ./print-cloud/api/storage/tmp:/opt/print-cloud/api/storage/tmp
+      - ./api/storage/tmp:/opt/print-cloud/api/storage/tmp
     depends_on:
       db:
         condition: service_healthy
