@@ -36,10 +36,37 @@ jobs:
           API_PORT=3000
           EOF
 
+      - name: Debug repo tree before compose
+        working-directory: print-cloud
+        run: |
+          set -e
+          echo "PWD=$(pwd)"
+          echo "== print-cloud root =="
+          ls -la
+          echo "== api dir =="
+          ls -la ./api || true
+          echo "== portal dir =="
+          ls -la ./portal || true
+          echo "== package.json check =="
+          test -f ./api/package.json && echo "FOUND ./api/package.json" || (echo "MISSING ./api/package.json" && exit 1)
+
+      - name: Debug compose resolution
+        working-directory: print-cloud
+        run: |
+          set -e
+          docker compose config
+
       - name: Start DB and API only
         working-directory: print-cloud
         run: |
           docker compose up -d --build db api
+
+      - name: Debug mounted /app in api container
+        working-directory: print-cloud
+        run: |
+          set -e
+          docker compose ps
+          docker compose exec -T api sh -c 'pwd; ls -la /app; [ -f /app/package.json ] && echo FOUND || echo MISSING'
 
       - name: Wait for API
         working-directory: print-cloud
@@ -61,6 +88,7 @@ jobs:
           exit 1
 
       - name: Phase 3 happy-path smoke
+        working-directory: print-cloud
         env:
           PHASE3_BASE_URL: http://127.0.0.1:3000
           PHASE3_PORTAL_TOKEN: ci_portal_smoke_token
@@ -70,6 +98,7 @@ jobs:
         run: pwsh -File scripts/phase3-smoke-test.ps1
 
       - name: Phase 3 negative smoke
+        working-directory: print-cloud
         env:
           PHASE3_BASE_URL: http://127.0.0.1:3000
           PHASE3_PORTAL_TOKEN: ci_portal_smoke_token
